@@ -30,9 +30,8 @@ module i2c_translator
   //--------------------------------------------------------------
 
   reg      [2:0]      sda_bf         ;
-  reg      [2:0]      sda_periph     ;
+  reg      [2:0]      sda_ph         ;
   reg                 dir            ;
-
   // Fast input reg
   reg                 f_iscl         ;
   reg                 f_ibf          ;
@@ -42,21 +41,21 @@ module i2c_translator
   reg                 f_operiph      ;
   reg                 f_osclk        ;
   // Some other variables
-  wire                out_sda_bf     ;
-  wire                out_sda_periph ;
-  reg                 fr_scl         ;
-  reg                 f_iscl_        ;
-  reg                 f_ibf_         ;
-  reg                 no_tr          ;
-  reg                 dir_           ;
-  reg                 dir__          ;
-  reg      [9:0]      cnt_scl        ;
-  reg      [3:0]      cnt_bits       ;
-  reg                 head_tx        ;
-  reg                 ack_bit        ;
-  reg                 fr_ibf         ;
-  reg                 obf            ;
-  reg                 oph            ;
+  logic               fr_scl         ;
+  logic               f_iscl_        ;
+  logic               no_tr          ;
+  logic    [9:0]      cnt_scl        ;
+  logic    [3:0]      cnt_bits       ;
+  logic               head_tx        ;
+  logic               rw_bit         ;
+  logic               rw_st          ;
+  logic               pre_rw_st      ;
+  logic               ack_bit        ;
+  logic               pre_dir        ;
+  logic               end_pack       ;
+  logic               end_byte       ;
+  logic               obf            ;
+  logic               oph            ;
 
   //--------------------------------------------------------------
   // BODY
@@ -69,14 +68,14 @@ module i2c_translator
     f_iperiph <= isda_periph ;
   end
 
-  // Input signals with metastability considered
+  // Input signals with metastability & rattling compensate
+  // Mb up size??? to one byte...
   always@(posedge iclk) begin
-    sda_bf     <= {sda_bf    [1:0], f_ibf    } ;
-    sda_periph <= {sda_periph[1:0], f_iperiph} ;
+    sda_bf <= sda_bf << 1 | f_ibf ;
+    sda_ph <= sda_ph << 1 | f_iperiph ;
   end
 
-
-  // Detecting out tansmition from MASTER
+  // Detecting out transmition from MASTER
   always@(posedge iclk) begin
     if (!f_iscl)         cnt_scl <= '0 ;
     else if (~&cnt_scl)  cnt_scl <= cnt_scl + 1'b1 ;
@@ -89,45 +88,45 @@ module i2c_translator
     f_iscl_ <= f_iscl ;
     fr_scl  <= ~f_iscl & f_iscl_ ;
 
-    f_ibf_  <= f_ibf ;
-    fr_ibf  <= f_ibf & ~f_ibf_ ;
-
     if (no_tr)               cnt_bits <= '0 ;
     else if (cnt_bits >= 9)  cnt_bits <= '0 ;
       else if (fr_scl)       cnt_bits <= cnt_bits + 1'b1 ;
   end
 
-  // Set direction of ack bit
+  // Services bits in packet
+  assign rw_bit   = (cnt_bits == 7) & ~head_tx ;
+  assign ack_bit  = (cnt_bits == 8) ;
+  assign end_byte = (cnt_bits >= 9) ;
+
   always@(posedge iclk) begin
-    if (cnt_bits == 8)       ack_bit <= (!dir) ? (sda_periph[1]) : (sda_bf[1]) ;
+    // Transmitted header of I2C packet
+    if (no_tr || end_pack)    head_tx   <= 1'b0 ;
+    else if (end_byte)        head_tx   <= 1'b1 ;
+
+    // Set read/write status of packet
+    if (no_tr)                pre_rw_st <= 1'b0 ;
+    else if (rw_bit)          pre_rw_st <= (sda_bf==0) ; // 1 - WR, 0 - RD
+
+    if (no_tr)                rw_st     <= 1'b0 ;
+    else if (end_byte)        rw_st     <= pre_rw_st ;
+
+    // Set direction of I2C data stream
+    if (rw_bit)               pre_dir   <= &sda_bf ;
+
+    if (no_tr)                       dir <= 1'b0    ;
+    else if (ack_bit)                dir <= (!rw_st & ~head_tx) || (rw_st & head_tx) ;
+      else if (end_byte & ~head_tx)  dir <= pre_dir ;
+        else if (end_byte)           dir <= pre_dir ;
+          else if (end_pack)         dir <= 1'b0    ;
+
+    // Detect end of all I2C data packet
+    if (end_byte & rw_st)  end_pack <= &sda_bf ;
+    else                   end_pack <= '0 ;
   end
 
-  // Set flag of transmitted header (address + r/w bit)
-  always@(posedge iclk) begin
-    if (no_tr)               head_tx <= 1'b0 ;
-    else if (cnt_bits == 9)  head_tx <= 1'b1 ;
-  end
-
-  // Change SDA data direction
-  always@(posedge iclk) begin
-    // Check r/w bit on head packet, for set direction
-    if (no_tr)                                        dir__ <= 1'b0 ;
-    else if ((cnt_bits==7) & sda_bf[1] & (!head_tx))  dir__ <= 1'b1 ;
-
-    // Delay for not recieve ACK bit on packet
-    if (cnt_scl == 127)                               dir_ <= dir__ ;
-
-    // Change direction only after send head packet
-    if (no_tr & fr_ibf)                               dir <= '0 ;
-    else                                              dir <= dir__ & head_tx ;
-  end
-
-  assign out_sda_bf     =  dir & !sda_periph[1] ;
-  assign out_sda_periph = !dir & !sda_bf    [1] ;
-
-  // Change ACK bit direction in each packet
-  always@(posedge iclk)  obf <= (cnt_bits == 8) ? (!ack_bit) : (out_sda_bf) ;
-  always@(posedge iclk)  oph <= (cnt_bits == 8) ? (!ack_bit) : (out_sda_periph) ;
+  // Commutation output I2C stream
+  assign obf =  dir & (sda_ph==0) ;
+  assign oph = !dir & (sda_bf==0) ;
 
   // Fast output registers
   always@(posedge iclk) begin
