@@ -7,38 +7,38 @@ module i2c_translator
     iclk        , // 96 MHz
 
     isck        ,
-    isda_bf     ,
-    isda_periph ,
+    isda_mast   ,
+    isda_slav   ,
 
     osck        ,
-    osda_bf     ,
-    osda_periph
+    osda_mast   ,
+    osda_slav
   );
 
   input               iclk        ;
 
   input               isck        ;
-  input               isda_bf     ;
-  input               isda_periph ;
+  input               isda_mast   ;
+  input               isda_slav   ;
 
   output              osck        ;
-  output              osda_bf     ;
-  output              osda_periph ;
+  output              osda_mast   ;
+  output              osda_slav   ;
 
   //--------------------------------------------------------------
   // Declaration internal variables
   //--------------------------------------------------------------
 
-  reg      [2:0]      sda_bf         ;
-  reg      [2:0]      sda_ph         ;
+  reg      [2:0]      sda_mast       ;
+  reg      [2:0]      sda_slav       ;
   reg                 dir            ;
   // Fast input reg
   reg                 f_iscl         ;
-  reg                 f_ibf          ;
-  reg                 f_iperiph      ;
+  reg                 f_imast        ;
+  reg                 f_islav        ;
   // Fast output regs
-  reg                 f_obf          ;
-  reg                 f_operiph      ;
+  reg                 f_omast        ;
+  reg                 f_oslav        ;
   reg                 f_osclk        ;
   // Some other variables
   logic               fr_scl         ;
@@ -54,8 +54,8 @@ module i2c_translator
   logic               pre_dir        ;
   logic               end_pack       ;
   logic               end_byte       ;
-  logic               obf            ;
-  logic               oph            ;
+  logic               omast          ;
+  logic               oslav          ;
 
   //--------------------------------------------------------------
   // BODY
@@ -63,16 +63,16 @@ module i2c_translator
 
   // Fast input registers
   always@(posedge iclk) begin
-    f_iscl    <= isck        ;
-    f_ibf     <= isda_bf     ;
-    f_iperiph <= isda_periph ;
+    f_iscl  <= isck      ;
+    f_imast <= isda_mast ;
+    f_islav <= isda_slav ;
   end
 
   // Input signals with metastability & rattling compensate
   // Mb up size??? to one byte...
   always@(posedge iclk) begin
-    sda_bf <= sda_bf << 1 | f_ibf ;
-    sda_ph <= sda_ph << 1 | f_iperiph ;
+    sda_mast <= sda_mast << 1 | f_mast ;
+    sda_slav <= sda_slav << 1 | f_slav ;
   end
 
   // Detecting out transmition from MASTER
@@ -105,13 +105,13 @@ module i2c_translator
 
     // Set read/write status of packet
     if (no_tr)                pre_rw_st <= 1'b0 ;
-    else if (rw_bit)          pre_rw_st <= (sda_bf==0) ; // 1 - WR, 0 - RD
+    else if (rw_bit)          pre_rw_st <= (sda_mast==0) ; // 1 - WR, 0 - RD
 
     if (no_tr)                rw_st     <= 1'b0 ;
     else if (end_byte)        rw_st     <= pre_rw_st ;
 
     // Set direction of I2C data stream
-    if (rw_bit)               pre_dir   <= &sda_bf ;
+    if (rw_bit)               pre_dir   <= &sda_mast ;
 
     if (no_tr)                       dir <= 1'b0    ;
     else if (ack_bit)                dir <= (!rw_st & ~head_tx) || (rw_st & head_tx) ;
@@ -120,27 +120,27 @@ module i2c_translator
           else if (end_pack)         dir <= 1'b0    ;
 
     // Detect end of all I2C data packet
-    if (end_byte & rw_st)  end_pack <= &sda_bf ;
+    if (end_byte & rw_st)  end_pack <= &sda_mast ;
     else                   end_pack <= '0 ;
   end
 
   // Commutation output I2C stream
-  assign obf =  dir & (sda_ph==0) ;
-  assign oph = !dir & (sda_bf==0) ;
+  assign omast =  dir & (sda_slav==0) ;
+  assign oslav = !dir & (sda_mast==0) ;
 
   // Fast output registers
   always@(posedge iclk) begin
-    f_obf     <= (obf)     ? (1'b0) : (1'bz) ;
-    f_operiph <= (oph)     ? (1'b0) : (1'bz) ;
-    f_osclk   <= (!f_iscl) ? (1'b0) : (1'bz) ;
+    f_omast <= (omast)   ? (1'b0) : (1'bz) ;
+    f_oslav <= (oslav)   ? (1'b0) : (1'bz) ;
+    f_osclk <= (!f_iscl) ? (1'b0) : (1'bz) ;
   end
 
   //--------------------------------------------------------------
   // Output signals
   //--------------------------------------------------------------
 
-  assign osda_bf     = f_obf ;
-  assign osda_periph = f_operiph ;
-  assign osck        = f_osclk ;
+  assign osda_mast = f_omast ;
+  assign osda_slav = f_oslav ;
+  assign osck      = f_osclk ;
 
 endmodule
